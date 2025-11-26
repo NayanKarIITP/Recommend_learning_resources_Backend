@@ -12,7 +12,7 @@ from sklearn.decomposition import NMF
 # --------- CONFIG ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "data")
-N_COMPONENTS = 15
+N_COMPONENTS = 15  #50
 TOP_N_DEFAULT = 5
 # ---------------------------
 
