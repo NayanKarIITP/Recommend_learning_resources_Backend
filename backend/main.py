@@ -9,12 +9,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sklearn.decomposition import NMF
 
-# --------- CONFIG ----------
+# CONFIG 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, "data")
 N_COMPONENTS = 50 
 TOP_N_DEFAULT = 5
-# ---------------------------
 
 app = FastAPI(title="Student Resource Recommender")
 
@@ -39,10 +38,8 @@ student_assessment: Optional[pd.DataFrame] = None
 engagement_df: Optional[pd.DataFrame] = None   # aggregated engagement for charts
 student_info_df: Optional[pd.DataFrame] = None # optional, if studentInfo.csv exists
 
-
-# ---------------------------------------------------------
 # LOAD DATA + TRAIN MODEL
-# ---------------------------------------------------------
+
 def load_oulad_and_train():
     global interaction_matrix, pred_matrix
     global student_ids, resource_ids, student_index_map
@@ -145,9 +142,8 @@ def load_oulad_and_train():
     print("Model ready!")
 
 
-# ---------------------------------------------------------
 # RECOMMENDATION FUNCTIONS
-# ---------------------------------------------------------
+
 def recommend_resources_nmf(student_id: int, top_n: int):
     if student_id not in student_index_map:
         raise KeyError("Student not found")
@@ -205,7 +201,7 @@ def recommend_with_details(student_id: int, top_n: int):
         result.append(
             {
                 "id_site": int(row["id_site"]),
-                # ✅ For UI: show title instead of raw ID
+                # For UI: show title instead of raw ID
                 "title": str(row.get("title", "")),
                 "activity_type": str(row.get("activity_type", "")),
                 "week_from": int(row["week_from"]) if not pd.isna(row.get("week_from")) else None,
@@ -218,9 +214,7 @@ def recommend_with_details(student_id: int, top_n: int):
     return result
 
 
-# ---------------------------------------------------------
 # PERFORMANCE
-# ---------------------------------------------------------
 def performance_summary(student_id: int):
     if student_assessment is None:
         return None
@@ -273,9 +267,7 @@ def performance_detail(student_id: int):
     return details
 
 
-# ---------------------------------------------------------
 # ENGAGEMENT (for charts)
-# ---------------------------------------------------------
 def engagement_timeseries(student_id: int):
     """
     Returns engagement over time (per week_from) for a student.
@@ -315,9 +307,7 @@ def engagement_timeseries(student_id: int):
         return result
 
 
-# ---------------------------------------------------------
 # STUDENT LIST (for dropdown)
-# ---------------------------------------------------------
 def get_student_list():
     """
     Returns a list of valid students for the dropdown.
@@ -374,15 +364,13 @@ def get_student_list():
     return result
 
 
-# ---------------------------------------------------------
 # ENDPOINTS
-# ---------------------------------------------------------
 @app.on_event("startup")
 def startup_event():
     load_oulad_and_train()
 
 
-# ---------- Recommendation ----------
+# Recommendation
 @app.get("/recommend")
 def recommend_endpoint(student_id: int, top_n: int = TOP_N_DEFAULT):
     # Case 1: Student ID does NOT exist at all
@@ -414,11 +402,11 @@ def recommend_endpoint(student_id: int, top_n: int = TOP_N_DEFAULT):
         "student_id": student_id,
         "top_n": top_n,
         "recommendations": recs,
-        "message": "✅ Recommendations successfully generated.",
+        "message": "Recommendations successfully generated.",
     }
 
 
-# ---------- Performance ----------
+#Performance
 @app.get("/performance")
 def performance_endpoint(student_id: int):
     summary = performance_summary(student_id)
@@ -436,7 +424,7 @@ def performance_detail_endpoint(student_id: int):
     }
 
 
-# ---------- Engagement ----------
+#Engagement
 @app.get("/engagement")
 def engagement_endpoint(student_id: int):
     series = engagement_timeseries(student_id)
@@ -446,7 +434,7 @@ def engagement_endpoint(student_id: int):
     }
 
 
-# ---------- Student list (dropdown) ----------
+#Student list (dropdown)
 @app.get("/students/list")
 def students_list_endpoint():
     students = get_student_list()
