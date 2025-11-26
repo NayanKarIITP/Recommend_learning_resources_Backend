@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sklearn.decomposition import NMF
 
 # --------- CONFIG ----------
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "data")
 N_COMPONENTS = 50
 TOP_N_DEFAULT = 5
@@ -44,105 +44,58 @@ student_info_df: Optional[pd.DataFrame] = None # optional, if studentInfo.csv ex
 # LOAD DATA + TRAIN MODEL
 # ---------------------------------------------------------
 def load_oulad_and_train():
-    global interaction_matrix, pred_matrix
+    global pred_matrix, interaction_matrix
     global student_ids, resource_ids, student_index_map
-    global vle_df, student_assessment, engagement_df, student_info_df
 
-    print("Loading OULAD CSV files...")
-    data: dict[str, pd.DataFrame] = {}
+    print("🔄 Loading pre-trained NMF model...")
 
-    for file in glob.glob(os.path.join(DATA_PATH, "*.csv")):
-        name = os.path.basename(file).replace(".csv", "")
-        data[name] = pd.read_csv(file)
-        print("Loaded:", name)
+    # ---- Load Pretrained Matrices ----
+    W_path = os.path.join(DATA_PATH, "W.npy")
+    H_path = os.path.join(DATA_PATH, "H.npy")
+    students_path = os.path.join(DATA_PATH, "students.csv")
+    resources_path = os.path.join(DATA_PATH, "resources.csv")
 
-    # Validate required files
-    for i in range(8):
-        if f"studentVle_{i}" not in data:
-            raise RuntimeError(f"Missing studentVle_{i}.csv")
+    # Safety checks
+    if not (os.path.exists(W_path) and os.path.exists(H_path)):
+        raise RuntimeError("❌ Missing W.npy or H.npy — train_model.py must be run first!")
 
-    # Concatenate studentVle splits
-    studentVle = pd.concat(
-        [data[f"studentVle_{i}"] for i in range(8)],
-        ignore_index=True,
-    )
-    if "Unnamed: 0" in studentVle.columns:
-        studentVle = studentVle.drop(columns=["Unnamed: 0"])
+    if not (os.path.exists(students_path) and os.path.exists(resources_path)):
+        raise RuntimeError("❌ Missing students.csv or resources.csv — run train_model.py first!")
 
-    # VLE metadata
-    vle_df_local = data.get("vle")
-    if vle_df_local is None:
-        raise RuntimeError("Missing vle.csv")
+    # Load model parts
+    W = np.load(W_path)
+    H = np.load(H_path)
 
-    # Full join to have titles, activity_type, weeks, etc.
-    studentVle_full = studentVle.merge(vle_df_local, on="id_site", how="left")
+    print("✔ Loaded W, H")
 
-    # Build interaction matrix (id_student × id_site)
-    interaction_matrix_local = studentVle_full.pivot_table(
-        index="id_student",
-        columns="id_site",
-        values="sum_click",
-        aggfunc="sum",
-        fill_value=0,
-    )
+    # Build prediction matrix
+    pred = W @ H
+    pred_matrix = pred
 
-    print("Interaction matrix shape:", interaction_matrix_local.shape)
+    # Load student and resource IDs
+    student_ids_list = pd.read_csv(students_path).iloc[:, 0].tolist()
+    resource_ids_list = pd.read_csv(resources_path).iloc[:, 0].tolist()
 
-    # Train NMF
-    print("Training NMF model...")
-    nmf = NMF(
-        n_components=N_COMPONENTS,
-        init="random",
-        random_state=42,
-        max_iter=300,
-    )
-    W = nmf.fit_transform(interaction_matrix_local.values)
-    H = nmf.components_
-    pred_local = W @ H
+    student_ids[:] = student_ids_list
+    resource_ids[:] = resource_ids_list
 
-    # Save globals for recommendations
-    pred_matrix = pred_local
-    interaction_matrix = interaction_matrix_local
-
-    student_ids[:] = interaction_matrix.index.to_list()
-    resource_ids[:] = interaction_matrix.columns.to_list()
+    # Build lookup map
     student_index_map.clear()
-    student_index_map.update({sid: idx for idx, sid in enumerate(student_ids)})
+    student_index_map.update({sid: i for i, sid in enumerate(student_ids)})
 
-    # Other tables
-    vle_df = vle_df_local
-    student_assessment = data.get("studentAssessment")
+    print(f"✔ Loaded {len(student_ids)} students")
+    print(f"✔ Loaded {len(resource_ids)} resources")
 
-    # Engagement for charts (sum_click per student per week_from)
-    if "week_from" in studentVle_full.columns:
-        engagement_df_local = (
-            studentVle_full.groupby(["id_student", "week_from"], dropna=False)["sum_click"]
-            .sum()
-            .reset_index()
-        )
-    else:
-        # Fallback: use all clicks as one bucket if week_from not available
-        engagement_df_local = (
-            studentVle_full.groupby(["id_student"], dropna=False)["sum_click"]
-            .sum()
-            .reset_index()
-            .rename(columns={"sum_click": "total_clicks"})
-        )
+    # OPTIONAL: create dummy interaction matrix for compatibility
+    # This avoids KeyErrors if code expects interaction_matrix
+    interaction_matrix = pd.DataFrame(
+        0,
+        index=student_ids,
+        columns=resource_ids
+    )
 
-    engagement_df = engagement_df_local
+    print("Pre-trained model loaded successfully!")
 
-    # Student info (for nicer dropdown labels, if present)
-    student_info_df = data.get("studentInfo")
-
-    # Re-assign to globals (extra safety)
-    globals()["pred_matrix"] = pred_matrix
-    globals()["interaction_matrix"] = interaction_matrix
-    globals()["vle_df"] = vle_df
-    globals()["student_assessment"] = student_assessment
-    globals()["engagement_df"] = engagement_df
-    globals()["student_info_df"] = student_info_df
-
-    print("Model ready!")
 
 
 # ---------------------------------------------------------
