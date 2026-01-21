@@ -471,8 +471,7 @@
 
 
 
-## backend/main.py
-import glob
+# backend/main.py
 import os
 from typing import List, Optional
 
@@ -481,15 +480,14 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-# --------- CONFIG ----------
+# ---------------- CONFIG ----------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, "data")
 TOP_N_DEFAULT = 5
-# ---------------------------
+# ----------------------------------------
 
-app = FastAPI(title="Student Resource Recommender")
+app = FastAPI(title="Student Resource Recommender (Render-safe)")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -498,11 +496,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --------- GLOBALS ----------
-interaction_matrix: Optional[pd.DataFrame] = None
-
-W_matrix: Optional[np.ndarray] = None   # (num_students, k)
-H_matrix: Optional[np.ndarray] = None   # (k, num_resources)
+# ---------------- GLOBALS ----------------
+W_matrix: Optional[np.ndarray] = None
+H_matrix: Optional[np.ndarray] = None
 
 student_ids: List[int] = []
 resource_ids: List[int] = []
@@ -510,146 +506,87 @@ student_index_map = {}
 
 vle_df: Optional[pd.DataFrame] = None
 student_assessment: Optional[pd.DataFrame] = None
-engagement_df: Optional[pd.DataFrame] = None
 student_info_df: Optional[pd.DataFrame] = None
-# ---------------------------
+# ----------------------------------------
 
 
-# ---------------------------------------------------------
-# LOAD PRE-TRAINED MODEL + METADATA (RENDER SAFE)
-# ---------------------------------------------------------
-def load_oulad_and_train():
-    global interaction_matrix
+# -------------------------------------------------
+# LOAD PRE-TRAINED MODEL (NO TRAINING, NO CSV LOAD)
+# -------------------------------------------------
+def load_model():
     global W_matrix, H_matrix
     global student_ids, resource_ids, student_index_map
-    global vle_df, student_assessment, engagement_df, student_info_df
+    global vle_df, student_assessment, student_info_df
 
-    print("🔄 Loading pre-trained NMF model (Render-safe)...")
+    print("🔄 Loading pre-trained NMF model (Render safe)...")
 
-    # ---- Load matrices (memory-mapped: NO RAM explosion)
+    # Memory-mapped matrices (CRITICAL for 512 MB)
     W_matrix = np.load(os.path.join(DATA_PATH, "W.npy"), mmap_mode="r")
     H_matrix = np.load(os.path.join(DATA_PATH, "H.npy"), mmap_mode="r")
 
-    # ---- Load ID mappings
-    student_ids[:] = (
-        pd.read_csv(os.path.join(DATA_PATH, "students.csv"))
-        .iloc[:, 0]
-        .astype(int)
-        .tolist()
-    )
+    student_ids[:] = pd.read_csv(
+        os.path.join(DATA_PATH, "students.csv")
+    ).iloc[:, 0].astype(int).tolist()
 
-    resource_ids[:] = (
-        pd.read_csv(os.path.join(DATA_PATH, "resources.csv"))
-        .iloc[:, 0]
-        .astype(int)
-        .tolist()
-    )
+    resource_ids[:] = pd.read_csv(
+        os.path.join(DATA_PATH, "resources.csv")
+    ).iloc[:, 0].astype(int).tolist()
 
     student_index_map.clear()
     student_index_map.update({sid: i for i, sid in enumerate(student_ids)})
 
-    # ---- Metadata
     vle_df = pd.read_csv(os.path.join(DATA_PATH, "vle.csv"))
     student_assessment = pd.read_csv(os.path.join(DATA_PATH, "studentAssessment.csv"))
     student_info_df = pd.read_csv(os.path.join(DATA_PATH, "studentInfo.csv"))
 
-    # ---- Engagement (needed for charts only)
-    studentVle = pd.concat(
-        [
-            pd.read_csv(os.path.join(DATA_PATH, f"studentVle_{i}.csv"))
-            for i in range(8)
-        ],
-        ignore_index=True,
-    )
-
-    studentVle_full = studentVle.merge(vle_df, on="id_site", how="left")
-
-    engagement_df = (
-        studentVle_full
-        .groupby(["id_student", "week_from"])["sum_click"]
-        .sum()
-        .reset_index()
-    )
-
-    # ---- Minimal interaction matrix (only for "already used" filter)
-    interaction_matrix = studentVle_full.pivot_table(
-        index="id_student",
-        columns="id_site",
-        values="sum_click",
-        aggfunc="sum",
-        fill_value=0,
-    )
-
-    print("✅ Model loaded successfully (no full matrix in memory)")
+    print("✅ Model loaded successfully (low memory mode)")
 
 
-# ---------------------------------------------------------
-# RECOMMENDATION CORE (ON-DEMAND COMPUTATION)
-# ---------------------------------------------------------
-def recommend_resources_nmf(student_id: int, top_n: int):
+# -------------------------------------------------
+# RECOMMENDATION
+# -------------------------------------------------
+def recommend_resources(student_id: int, top_n: int):
     if student_id not in student_index_map:
         raise KeyError("Student not found")
 
-    if W_matrix is None or H_matrix is None or interaction_matrix is None:
-        raise RuntimeError("Model not initialized")
-
     s_idx = student_index_map[student_id]
 
-    # 🔥 SAFE: compute only one student's scores
-    raw_scores = W_matrix[s_idx] @ H_matrix   # (k,) @ (k, items)
+    # Compute ONLY one row
+    scores = W_matrix[s_idx] @ H_matrix
+    scores = np.nan_to_num(scores)
 
-    scores = np.nan_to_num(raw_scores, nan=0.0, posinf=0.0, neginf=0.0)
+    top_idx = np.argsort(scores)[::-1][:top_n]
 
-    already_used = interaction_matrix.loc[student_id]
-    already_used = already_used[already_used > 0].index.to_list()
-
-    scored_items: List[tuple[int, float]] = []
-    for j, score in enumerate(scores):
-        rid = resource_ids[j]
-        if rid not in already_used:
-            scored_items.append((int(rid), float(score)))
-
-    scored_items.sort(key=lambda x: x[1], reverse=True)
-    return scored_items[:top_n]
+    return [(int(resource_ids[i]), float(scores[i])) for i in top_idx]
 
 
 def recommend_with_details(student_id: int, top_n: int):
-    if vle_df is None:
-        return []
-
-    recs = recommend_resources_nmf(student_id, top_n)
+    recs = recommend_resources(student_id, top_n)
     if not recs:
         return []
 
     rec_ids = [r[0] for r in recs]
-    scores_map = {rid: score for rid, score in recs}
+    score_map = {r[0]: r[1] for r in recs}
 
     subset = vle_df[vle_df["id_site"].isin(rec_ids)].copy()
-    subset["score"] = subset["id_site"].map(scores_map)
-    subset = subset.fillna(0).sort_values("score", ascending=False)
+    subset["score"] = subset["id_site"].map(score_map)
+    subset = subset.sort_values("score", ascending=False)
 
-    result = []
-    for _, row in subset.iterrows():
-        result.append(
-            {
-                "id_site": int(row["id_site"]),
-                "title": str(row.get("title", "")),
-                "activity_type": str(row.get("activity_type", "")),
-                "week_from": int(row["week_from"]) if not pd.isna(row.get("week_from")) else None,
-                "week_to": int(row["week_to"]) if not pd.isna(row.get("week_to")) else None,
-                "score": float(row["score"]),
-            }
-        )
-    return result
+    return [
+        {
+            "id_site": int(r["id_site"]),
+            "title": str(r.get("title", "")),
+            "activity_type": str(r.get("activity_type", "")),
+            "score": float(r["score"]),
+        }
+        for _, r in subset.iterrows()
+    ]
 
 
-# ---------------------------------------------------------
+# -------------------------------------------------
 # PERFORMANCE
-# ---------------------------------------------------------
+# -------------------------------------------------
 def performance_summary(student_id: int):
-    if student_assessment is None:
-        return None
-
     rows = student_assessment[student_assessment["id_student"] == student_id]
     if rows.empty:
         return None
@@ -662,74 +599,22 @@ def performance_summary(student_id: int):
     }
 
 
-def performance_detail(student_id: int):
-    if student_assessment is None:
-        return []
-
-    rows = student_assessment[student_assessment["id_student"] == student_id]
-    if rows.empty:
-        return []
-
-    return [
-        {
-            "id_assessment": int(r["id_assessment"]),
-            "score": float(r["score"]),
-            "is_pass": bool(r["score"] >= 40),
-            "date_submitted": int(r["date_submitted"]) if not pd.isna(r["date_submitted"]) else None,
-        }
-        for _, r in rows.iterrows()
-    ]
-
-
-# ---------------------------------------------------------
-# ENGAGEMENT
-# ---------------------------------------------------------
-def engagement_timeseries(student_id: int):
-    if engagement_df is None:
-        return []
-
-    rows = engagement_df[engagement_df["id_student"] == student_id]
-    return [
-        {"week": int(r["week_from"]), "sum_click": float(r["sum_click"])}
-        for _, r in rows.iterrows()
-    ]
-
-
-# ---------------------------------------------------------
-# STUDENT LIST
-# ---------------------------------------------------------
-def get_student_list():
-    if not student_ids:
-        return []
-
-    result = []
-    for sid in student_ids:
-        result.append({"id_student": int(sid), "label": f"Student {sid}"})
-    return result
-
-
-# ---------------------------------------------------------
-# API ENDPOINTS
-# ---------------------------------------------------------
+# -------------------------------------------------
+# API
+# -------------------------------------------------
 @app.on_event("startup")
 def startup_event():
-    load_oulad_and_train()
+    load_model()
 
 
 @app.get("/recommend")
 def recommend_endpoint(student_id: int, top_n: int = TOP_N_DEFAULT):
     if student_id not in student_index_map:
-        return {
-            "student_id": student_id,
-            "recommendations": [],
-            "message": "Student not found",
-        }
+        return {"student_id": student_id, "recommendations": []}
 
-    recs = recommend_with_details(student_id, top_n)
     return {
         "student_id": student_id,
-        "top_n": top_n,
-        "recommendations": recs,
+        "recommendations": recommend_with_details(student_id, top_n),
     }
 
 
@@ -741,20 +626,12 @@ def performance_endpoint(student_id: int):
     return summary
 
 
-@app.get("/performance/detail")
-def performance_detail_endpoint(student_id: int):
-    return {"student_id": student_id, "records": performance_detail(student_id)}
-
-
-@app.get("/engagement")
-def engagement_endpoint(student_id: int):
-    return {"student_id": student_id, "engagement": engagement_timeseries(student_id)}
-
-
 @app.get("/students/list")
 def students_list_endpoint():
-    students = get_student_list()
-    return {"count": len(students), "students": students}
+    return {
+        "count": len(student_ids),
+        "students": [{"id_student": s, "label": f"Student {s}"} for s in student_ids],
+    }
 
 
 @app.get("/health")
