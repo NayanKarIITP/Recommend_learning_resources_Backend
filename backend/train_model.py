@@ -1,3 +1,9 @@
+"""
+Offline training script.
+Run locally only.
+DO NOT use on production servers.
+"""
+
 import glob
 import os
 import numpy as np
