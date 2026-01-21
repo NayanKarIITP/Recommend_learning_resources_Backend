@@ -637,3 +637,21 @@ def students_list_endpoint():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/students/search")
+def search_students(query: str = "", limit: int = 10):
+    if not query:
+        return {"students": []}
+
+    matches = [
+        sid for sid in student_ids
+        if str(sid).startswith(query)
+    ][:limit]
+
+    return {
+        "students": [
+            {"id_student": int(sid), "label": f"Student {sid}"}
+            for sid in matches
+        ]
+    }
+
